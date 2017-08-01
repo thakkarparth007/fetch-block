@@ -205,6 +205,7 @@ type BlockPerf struct {
 	NumInvalidTx      int
 	BlockDurationNs   int64 // Difference between block receving time and the time of submission of first proposal in block
 	ProcessingTime    int64 // time taken to unmarshall and process the block
+	ProcessingTimeWithoutDeserializeCert int64 // time taken to unmarshall and process the block, without deserializeidentity
 	BlockSizeInBytes  int
 	TxValidationStats map[string]int
 	TxPerfs           []TxPerf
@@ -230,6 +231,7 @@ func processBlock(blockEvent *pb.Event_Block) {
 	var localBlock Block
 	var now time.Time
 	var blockSizeInBytes int
+	var timeToDeserializeIdentity int64
 
 	block = blockEvent.Block
 	localBlock.Header = block.Header
@@ -329,7 +331,9 @@ func processBlock(blockEvent *pb.Event_Block) {
 		localTransaction.SignatureHeader = getSignatureHeaderFromBlockData(localSignatureHeader)
 		//localTransaction.SignatureHeader.Nonce = localSignatureHeader.Nonce
 
+                tNow := time.Now()
 		deserializeIdentity(localSignatureHeader.Creator) // to impact the block processing time
+		timeToDeserializeIdentity += time.Now().Sub(tNow).Nanoseconds()
 
 		//localTransaction.SignatureHeader.Certificate, _ = deserializeIdentity(localSignatureHeader.Creator)
 		transaction := &pb.Transaction{}
@@ -409,6 +413,8 @@ func processBlock(blockEvent *pb.Event_Block) {
 
 	blockPerf.BlockSizeInBytes = blockSizeInBytes
 	blockPerf.ProcessingTime = time.Now().Sub(now).Nanoseconds()
+	blockPerf.ProcessingTimeWithoutDeserializeCert = blockPerf.ProcessingTime - timeToDeserializeIdentity
+
 	blockPerf.BlockDurationNs = blockPerf.TxPerfs[0].LatencyNs
 	for i := range blockPerf.TxPerfs {
 		if blockPerf.BlockDurationNs < blockPerf.TxPerfs[i].LatencyNs {
