@@ -204,6 +204,8 @@ type BlockPerf struct {
 	NumValidTx        int
 	NumInvalidTx      int
 	BlockDurationNs   int64 // Difference between block receving time and the time of submission of first proposal in block
+	ProcessingTime    int64 // time taken to unmarshall and process the block
+	BlockSizeInBytes  int
 	TxValidationStats map[string]int
 	TxPerfs           []TxPerf
 }
@@ -227,10 +229,16 @@ func processBlock(blockEvent *pb.Event_Block) {
 	var block *cb.Block
 	var localBlock Block
 	var now time.Time
+	var blockSizeInBytes int
 
 	block = blockEvent.Block
 	localBlock.Header = block.Header
 	localBlock.TransactionFilter = ledgerUtil.NewTxValidationFlags(len(block.Data.Data))
+	blockSizeInBytes = 8 + len(block.Header.PreviousHash) + len(block.Header.DataHash) // 8 for block.Header.Number - uint64
+	for i := range block.Metadata.Metadata {
+		blockSizeInBytes += len(block.Metadata.Metadata[i])
+	}
+
 	now = time.Now()
 
 	// process block metadata before data
@@ -252,7 +260,14 @@ func processBlock(blockEvent *pb.Event_Block) {
 
 	var blockPerf BlockPerf
 	blockPerf.TxValidationStats = make(map[string]int)
+
+	//	throughPutPerf.Lock()
+	//	throughPutPerf.NumValidTx += len(block.Data.Data)
+	//	throughPutPerf.Unlock()
+
 	for txIndex, data := range block.Data.Data {
+		blockSizeInBytes += len(data)
+
 		localTransaction := &Transaction{}
 		//Get envelope which is stored as byte array in the data field.
 		envelope, err := utils.GetEnvelopeFromBlock(data)
@@ -305,6 +320,7 @@ func processBlock(blockEvent *pb.Event_Block) {
 			LatencyNs:              now.Sub(subTime).Nanoseconds(),
 		})
 		// Performance measurement code ends
+
 		localTransaction.ChannelHeader = localChannelHeader
 		localSignatureHeader := &cb.SignatureHeader{}
 		if err := proto.Unmarshal(payload.Header.SignatureHeader, localSignatureHeader); err != nil {
@@ -312,6 +328,9 @@ func processBlock(blockEvent *pb.Event_Block) {
 		}
 		localTransaction.SignatureHeader = getSignatureHeaderFromBlockData(localSignatureHeader)
 		//localTransaction.SignatureHeader.Nonce = localSignatureHeader.Nonce
+
+		deserializeIdentity(localSignatureHeader.Creator) // to impact the block processing time
+
 		//localTransaction.SignatureHeader.Certificate, _ = deserializeIdentity(localSignatureHeader.Creator)
 		transaction := &pb.Transaction{}
 		if err := proto.Unmarshal(payload.Data, transaction); err != nil {
@@ -378,19 +397,27 @@ func processBlock(blockEvent *pb.Event_Block) {
 
 		//append the transaction
 		localBlock.Transactions = append(localBlock.Transactions, localTransaction)
+
 	}
-	blockJSON, _ := json.Marshal(localBlock)
-	blockJSONString, _ := prettyprint(blockJSON)
+	//blockJSON, _ := json.Marshal(localBlock)
+	//blockJSONString, _ := prettyprint(blockJSON)
 	fmt.Printf("Received Block [%d] from ChannelId [%s]", localBlock.Header.Number, localBlock.Transactions[0].ChannelHeader.ChannelId)
 	fileName := localBlock.Transactions[0].ChannelHeader.ChannelId + "_blk#" + strconv.FormatUint(localBlock.Header.Number, 10) + ".json"
-	f, _ := os.Create(expName + "/" + fileName)
-	_, _ = f.WriteString(string(blockJSONString))
-	f.Close()
+	//f, _ := os.Create(expName + "/" + fileName)
+	//_, _ = f.WriteString(string(blockJSONString))
+	//f.Close()
 
+	blockPerf.BlockSizeInBytes = blockSizeInBytes
+	blockPerf.ProcessingTime = time.Now().Sub(now).Nanoseconds()
 	blockPerf.BlockDurationNs = blockPerf.TxPerfs[0].LatencyNs
+	for i := range blockPerf.TxPerfs {
+		if blockPerf.BlockDurationNs < blockPerf.TxPerfs[i].LatencyNs {
+			blockPerf.BlockDurationNs = blockPerf.TxPerfs[i].LatencyNs
+		}
+	}
 	blockPerfJSON, _ := json.Marshal(blockPerf)
 	blockPerfJSONString, _ := prettyprint(blockPerfJSON)
-	f, _ = os.Create(expName + "/perf_" + fileName)
+	f, _ := os.Create(expName + "/perf_" + fileName)
 	f.WriteString(string(blockPerfJSONString))
 	f.Close()
 }
